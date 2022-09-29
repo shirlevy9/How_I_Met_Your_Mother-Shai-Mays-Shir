@@ -1,0 +1,199 @@
+---
+title: "Our Project- 
+Drinking in 'How I Met Your Mother'"
+subtitle:  "Mays, Shai & Shir"
+runtime: shiny
+output: tufte::tufte_html
+
+---
+
+As part of our project, we decided to analyze and visualize the drinking patterns on our favorite American sitcom, "How I Met Your Mother," throughout the sessions.
+
+We counted the words associated with drinking in each episode based on the script of the series, and then visualized the results, as you can see:
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman:: p_load(rvest, tidyverse,stringr, tidytext, raster)
+library(ggplot2)
+library(plotly)
+library(hrbrthemes)
+library(shiny)
+library(dplyr)
+
+
+setwd("C:/Users/shiri/OneDrive/Desktop/Shir/matan")
+  
+```
+
+
+```{r eval=FALSE}
+
+#The first part of our script is based on:
+#Jorge Cimentada's previous work (https://cimentadaj.github.io/blog/)
+
+main_url <- "http://transcripts.foreverdreaming.org"
+all_pages <- paste0("http://transcripts.foreverdreaming.org/viewforum.php?f=177&start=", seq(0, 200, 25))
+characters <- c("ted", "lily", "marshall", "barney", "robin")
+drink <- c("beer","beers", "drink", "drinks", "drinking", "drunk", "cheers", "champagne",
+           "whiskey", "bar", "bars", "pub", "pubs", "wine", "wines", "shot", "shots")
+
+episode_getter <- function(link) {
+  title_reference <-
+    link %>%
+    read_html() %>%
+    html_nodes(".topictitle") # Get the html node name with 'selector gadget'
+  
+  episode_links <-
+    title_reference %>%
+    html_attr("href") %>%
+    gsub("^.", "", .) %>%
+    paste0(main_url, .) %>%
+    setNames(title_reference %>% html_text()) %>%
+    enframe(name = "episode_name", value = "link")
+  
+  episode_links
+}
+
+all_episodes <- map_df(all_pages, episode_getter) # loop over all seasons and get all episode links
+all_episodes$id <- 1:nrow(all_episodes)
+
+episode_fun <- function(file) {
+  
+  file %>%
+    read_html() %>%
+    html_nodes(".postbody") %>%
+    html_text() %>%
+    str_split("\n|\t") %>%
+    .[[1]] %>%
+    data_frame(text = .) %>%
+    filter(str_detect(text, ""), # Lots of empty spaces
+           !str_detect(text, "^\\t"), # Lots of lines with \t to delete
+           !str_detect(text, "^\\[.*\\]$"), # Text that start with brackets
+           !str_detect(text, "^\\(.*\\)$"), # Text that starts with parenthesis
+           str_detect(text, "^*.:"), # I want only lines with start with dialogue (:)
+           !str_detect(text, "^ad")) # Remove lines that start with ad (for 'ads', the link of google ads)
+}
+
+all_episodes$text <- map(all_episodes$link, episode_fun)
+all_episodes$count <- map_dbl(all_episodes$text, nrow)
+
+all_episodes <-
+  all_episodes %>%
+  separate(episode_name, c("season", "episode"), "-", extra = "merge") %>%
+  separate(season, c("season", "episode_number"), sep = "x")
+
+lines_characters <-
+  map(filter(all_episodes, count > 100) %>% pull(text), ~ { 
+    # only loop over episodes that have over 10 lines
+    .x %>%
+      separate(text, c("character", "text"), sep = ":", extra = 'merge') %>%
+      # separate character dialogue from actual dialogo
+      unnest_tokens(character, character) %>%
+      filter(str_detect(character, paste0(paste0("^", characters, "$"), collapse = "|"))) %>%
+      # only count the lines of our chosen characters
+      mutate(episode_lines_id = 1:nrow(.))
+  }) %>%
+  setNames(filter(all_episodes, count > 100) %>% # name according to episode
+             unite(season_episode, season, episode_number, sep = "x") %>%
+             pull(season_episode)) %>%
+  enframe() %>%
+  unnest() %>%
+  mutate(all_lines_id = 1:nrow(.))
+
+words_per_character <-
+  lines_characters %>%
+  unnest_tokens(word, text) %>% # expand all sentences into words
+  anti_join(stop_words) %>% # remove bad words
+  filter(!word %in% characters) %>% # only select characters we're interested
+  arrange(name) %>%
+  separate(name, c("season", "episode"), sep = "x", remove = FALSE) %>%
+  mutate(name = factor(name, ordered = TRUE),
+         season = factor(season, ordered = TRUE),
+         episode = factor(episode, ordered = TRUE)) %>%
+  filter(season != "07")
+
+```
+
+```{r eval=FALSE}
+
+words_per_character$count <- 0
+
+for (i in drink) {
+  for (j in 1:nrow(words_per_character)) 
+    {
+    words_per_character[j,8] <- 
+      ifelse(words_per_character[j,7] == i, words_per_character[j,8] +1 , words_per_character[j,8])
+  }
+}
+
+words_per_character$season_episode <- (as.numeric(words_per_character$season)
++ (as.numeric(words_per_character$episode) /10))
+
+#creating data for the plot
+plot_data <- words_per_character %>%     
+  group_by(season_episode) %>%          
+  summarise_at(vars(count),             
+               list(drink_words_per_episode = sum))
+write.csv(plot_data, "data_for_shiny.csv")
+
+
+plot_data_new <- plot_data %>% separate(season_episode, c('season', 'episode'))
+plot_data_new <- na.omit(plot_data_new)
+write.csv(plot_data_new, "data_for_shiny2.csv")
+```
+
+
+```
+---
+runtime: shiny
+---
+```
+
+## Inputs and Outputs
+
+```{r ex_inputs}
+#| eval = FALSE
+inputPanel(
+  
+  sliderInput("season", label = "Select season:",
+              min = 1, max = 8, value = 4, step = 1)
+)
+```
+
+
+```{r}
+data2 <- read.csv("data_for_shiny.csv")
+
+data2 |> ggplot(aes(x= season_episode , y= drink_words_per_episode)) +
+  geom_area(fill="#69b3a2", alpha=0.5) +
+  geom_line(color="#69b3a2") +
+  ylab("Drinking (words)") +
+  xlab("Episodes Across The Season")
+
+```
+
+
+# integration with shiny
+```{r ex_render}
+#| eval = FALSE
+
+renderPlot({
+    data2 <- read.csv("data_for_shiny2.csv")
+    data2 <- data2 %>% dplyr::filter(season == input$season)
+
+data2 |> ggplot(aes(x= episode , y= drink_words_per_episode)) +
+  geom_area(fill="#69b3a2", alpha=0.5) +
+  geom_line(color="#69b3a2") +
+  ylab("Drinking (words)") +
+  xlab("Episodes Across The Season")
+})
+```
+
+This is what this looks like!!! :)
+
+```{r ex, ref.label=c("ex_inputs", "ex_render")}
+#| eval=TRUE,
+#| echo=FALSE
+```
+
